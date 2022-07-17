@@ -151,7 +151,7 @@ def query_bm_25(query, relevant_documents, dictionary, document_lens):
 def calc_query_tf_idf(query, dictionary, amount_of_docs):
     query_dictionary = {}
     counter = Counter(query)
-    max_occurrence = counter.most_common(1)
+    max_occurrence = counter.most_common(1)[0][1]
     for token in query:
 
         tf = counter[token] / max_occurrence
