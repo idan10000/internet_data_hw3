@@ -1,6 +1,7 @@
 import os
 import sys
 
+import numpy as np
 from nltk.corpus import stopwords
 from nltk.tokenize import RegexpTokenizer
 from nltk.stem import PorterStemmer
@@ -17,11 +18,11 @@ tfs = {}
 tf_idfs = {}
 document_lens = {}
 
-query_dictionary = {}
-
 document_norms = defaultdict(int)  # This dictionary holds the length of all document vectors
 
-corpus = {}  # This dictionary holds the words dictionary ("dictionary") and the document_reference (dictionary of all files and their lengths)
+
+k = 1.5
+b = 0.75
 
 
 # Extract the desired text from file, tokenize the text, filter stop words and stemming.
@@ -92,8 +93,10 @@ def create_index():
             file = input_dir + "/" + file_name
             extract_words(file)
 
-    calc_tf_idf()
+    document_lens["avg"] = sum(document_lens) / len(document_lens)
 
+    calc_tf_idf()
+    corpus = {}
     # Add dictionary and document_reference to corpus
     corpus["dictionary"] = dictionary
     corpus["document_norms"] = document_norms
@@ -104,4 +107,125 @@ def create_index():
     inverted_index_file.close()
 
 
-create_index()
+def preprocess_query():
+    try:
+        query = sys.argv[4].lower()
+    except:
+        return None
+    stop_words = set(stopwords.words("english"))
+    tokenizer = RegexpTokenizer(r'\w+')
+    ps = PorterStemmer()
+    tokens = tokenizer.tokenize(query)  # tokenize and filter punctuation.
+    tokens = [word for word in tokens if not word in stop_words]  # remove stop words.
+    for i in range(len(tokens)):  # stemming
+        tokens[i] = ps.stem(tokens[i])
+    return tokens
+
+
+def find_relevant_documents(query, dictionary):
+    docs = set()
+    for token in query:
+        for document in dictionary[token]:
+            docs.add(document)
+    return docs
+
+
+def query_bm_25(query, relevant_documents, dictionary, document_lens):
+    documents = []
+    for document in relevant_documents:
+        score = 0
+        for token in query:
+            docs_with_token = len(dictionary[token])
+            idf = np.log((len(document_lens) - docs_with_token + 0.5) / (docs_with_token + 0.5) + 1)
+            if document in dictionary[token]:
+                frequency = dictionary[token][document]
+            else:
+                frequency = 0
+            score += idf * (frequency * (k + 1)) / (
+                    frequency + k * (1 - b + (b * document_lens[document] / document_lens["avg"])))
+        documents.append((document, score))
+    documents.sort(key=lambda t: t[1], reverse=True)
+    return documents
+
+
+def calc_query_tf_idf(query, dictionary, amount_of_docs):
+    query_dictionary = {}
+    counter = Counter(query)
+    max_occurrence = counter.most_common(1)
+    for token in query:
+
+        tf = counter[token] / max_occurrence
+        if token in dictionary:
+            idf = math.log2(amount_of_docs / len(dictionary.get(token)))
+        else:
+            idf = 0
+        query_dictionary[token] = tf * idf
+    return query_dictionary
+
+
+def query_tf_idf(query_dict, relevant_documents, dictionary, document_norms):
+    results = []
+
+    # calc query vector norm
+    query_norm = 0
+    for token in query_dict:
+        query_norm += query_dict[token] ** 2
+    query_norm = math.sqrt(query_norm)
+
+    for doc in relevant_documents:
+        dot = 0
+        for token in query_dict:
+            if token in doc:
+                dot += dictionary[token][doc] * query_dict[token]
+
+        cosSim = dot / (document_norms[doc] * query_norm)
+        results.append((doc, cosSim))
+
+    results.sort(key=lambda t: t[1], reverse=True)
+    return results
+
+
+def query():
+    index_path = sys.argv[3]
+    method = sys.argv[2]
+
+    # open inverted index and unpack it
+    try:
+        index_json = open(index_path, "r")
+    except:
+        print("index path does not exist")
+        return
+
+    corpus = json.load(index_json)
+    dictionary = corpus["dictionary"]
+    document_norms = corpus["document_norms"]
+    document_lens = corpus["document_lens"]
+
+    index_json.close()
+
+    # preprocess query, tokenize, truncate, and remove stop words
+    query = preprocess_query()
+
+    if query is None:
+        print("Query question is missing from input.")
+        return
+
+    relavent_docs = find_relevant_documents(query, dictionary)
+    if method == "bm25":
+        results = query_bm_25(query, relavent_docs, dictionary, document_lens)
+    else:
+        query_dict = calc_query_tf_idf(query, dictionary, len(document_lens))
+
+        results = query_tf_idf(query_dict, relavent_docs, dictionary, document_norms)
+
+    f = open("ranked_query_docs.txt", "w")
+    for i in range(0, len(results)):
+        f.write(results[i][0] + "\n")
+    f.close()
+
+
+if __name__ == '__main__':
+    if sys.argv[1] == "query":
+        query()
+    else:
+        create_index()
