@@ -16,6 +16,7 @@ dictionary = {}  # This dictionary holds all the words, the tf-idf for each file
 
 tfs = {}
 tf_idfs = {}
+bm25_idfs = {}
 document_lens = {}
 
 document_norms = defaultdict(int)  # This dictionary holds the length of all document vectors
@@ -50,13 +51,13 @@ def extract_words(filename):
         for entry in child:
             if entry.tag == "RECORDNUM":
                 id = int(entry.text)
-            elif entry.tag == ("TITLE" or "ABSTRACT" or "EXTRACT"):
+            elif entry.tag == "TITLE" or entry.tag == "ABSTRACT" or entry.tag =="EXTRACT":
                 txt += str(entry.text) + " "
 
         txt = txt.lower()
         tokens = tokenizer.tokenize(txt)  # tokenize and filter punctuation.
 
-        tokens = [word for word in tokens if not word in stop_words]  # remove stop words.
+        tokens = [word for word in tokens if word not in stop_words]  # remove stop words.
 
         for i in range(len(tokens)):  # stemming
             tokens[i] = ps.stem(tokens[i])
@@ -79,12 +80,14 @@ def calc_tf_idf():
     num_of_documents = len(document_lens)
     for token, tokenDict in dictionary.items():
         idf = math.log2(num_of_documents / len(tokenDict))
+        bm25_idfs[token] = np.log((len(document_lens) - len(tokenDict) + 0.5) / (len(tokenDict) + 0.5) + 1)
         for doc in tokenDict:
             tf = tfs[doc][token]
             w = tf * idf
             tf_idfs[(doc, token)] = w
             document_norms[doc] += w ** 2
-
+    for doc in document_norms:
+        document_norms[doc] = math.sqrt(document_norms[doc])
 
 def create_index():
     input_dir = sys.argv[2]
@@ -101,6 +104,7 @@ def create_index():
     corpus["dictionary"] = dictionary
     corpus["document_norms"] = document_norms
     corpus["document_lens"] = document_lens
+    corpus["bm25_idfs"] = bm25_idfs
 
     inverted_index_file = open("vsm_inverted_index.json", "w")
     json.dump(corpus, inverted_index_file, indent=8)
@@ -108,15 +112,12 @@ def create_index():
 
 
 def preprocess_query():
-    try:
-        query = sys.argv[4].lower()
-    except:
-        return None
+    query = sys.argv[4].lower()
     stop_words = set(stopwords.words("english"))
     tokenizer = RegexpTokenizer(r'\w+')
     ps = PorterStemmer()
     tokens = tokenizer.tokenize(query)  # tokenize and filter punctuation.
-    tokens = [word for word in tokens if not word in stop_words]  # remove stop words.
+    tokens = [word for word in tokens if word not in stop_words]  # remove stop words.
     for i in range(len(tokens)):  # stemming
         tokens[i] = ps.stem(tokens[i])
     return tokens
@@ -125,24 +126,25 @@ def preprocess_query():
 def find_relevant_documents(query, dictionary):
     docs = set()
     for token in query:
-        for document in dictionary[token]:
-            docs.add(document)
+        if token in dictionary:
+            for document in dictionary[token]:
+                docs.add(document)
     return docs
 
 
-def query_bm_25(query, relevant_documents, dictionary, document_lens):
+def query_bm_25(query, relevant_documents, dictionary, document_lens, bm25_idfs):
     documents = []
     for document in relevant_documents:
         score = 0
         for token in query:
-            docs_with_token = len(dictionary[token])
-            idf = np.log((len(document_lens) - docs_with_token + 0.5) / (docs_with_token + 0.5) + 1)
-            if document in dictionary[token]:
-                frequency = dictionary[token][document]
-            else:
-                frequency = 0
-            score += idf * (frequency * (k + 1)) / (
-                    frequency + k * (1 - b + (b * document_lens[document] / document_lens["avg"])))
+            if token in dictionary:
+                idf = bm25_idfs[token]
+                if document in dictionary[token]:
+                    frequency = dictionary[token][document]
+                else:
+                    frequency = 0
+                score += idf * (frequency * (k + 1)) / (
+                        frequency + k * (1 - b + (b * document_lens[document] / document_lens["avg"])))
         documents.append((document, score))
     documents.sort(key=lambda t: t[1], reverse=True)
     return documents
@@ -175,10 +177,12 @@ def query_tf_idf(query_dict, relevant_documents, dictionary, document_norms):
     for doc in relevant_documents:
         dot = 0
         for token in query_dict:
-            if token in doc:
-                dot += dictionary[token][doc] * query_dict[token]
+            if token in dictionary:
+                if doc in dictionary[token]:
+                    dot += dictionary[token][doc] * query_dict[token]
 
         cosSim = dot / (document_norms[doc] * query_norm)
+
         results.append((doc, cosSim))
 
     results.sort(key=lambda t: t[1], reverse=True)
@@ -200,6 +204,7 @@ def query():
     dictionary = corpus["dictionary"]
     document_norms = corpus["document_norms"]
     document_lens = corpus["document_lens"]
+    bm25_idfs = corpus["bm25_idfs"]
 
     index_json.close()
 
@@ -212,7 +217,7 @@ def query():
 
     relavent_docs = find_relevant_documents(query, dictionary)
     if method == "bm25":
-        results = query_bm_25(query, relavent_docs, dictionary, document_lens)
+        results = query_bm_25(query, relavent_docs, dictionary, document_lens, bm25_idfs)
     else:
         query_dict = calc_query_tf_idf(query, dictionary, len(document_lens))
 
