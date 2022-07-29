@@ -19,7 +19,7 @@ tf_idfs = {}
 bm25_idfs = {}
 document_lens = {}
 
-document_norms = defaultdict(int)  # This dictionary holds the length of all document vectors
+document_norms = defaultdict(float)  # This dictionary holds the length of all document vectors
 
 
 k = 1.5
@@ -84,7 +84,9 @@ def calc_tf_idf():
         for doc in tokenDict:
             tf = tfs[doc][token]
             w = tf * idf
-            tf_idfs[(doc, token)] = w
+            if doc not in tf_idfs:
+                tf_idfs[doc] = {}
+            tf_idfs[doc][token] = w
             document_norms[doc] += w ** 2
     for doc in document_norms:
         document_norms[doc] = math.sqrt(document_norms[doc])
@@ -102,6 +104,7 @@ def create_index():
     corpus = {}
     # Add dictionary and document_reference to corpus
     corpus["dictionary"] = dictionary
+    corpus["tf_idfs"] = tf_idfs
     corpus["document_norms"] = document_norms
     corpus["document_lens"] = document_lens
     corpus["bm25_idfs"] = bm25_idfs
@@ -165,13 +168,13 @@ def calc_query_tf_idf(query, dictionary, amount_of_docs):
     return query_dictionary
 
 
-def query_tf_idf(query_dict, relevant_documents, dictionary, document_norms):
+def query_tf_idf(query_dict, relevant_documents, dictionary, tf_idfs, document_norms):
     results = []
 
     # calc query vector norm
     query_norm = 0
     for token in query_dict:
-        query_norm += query_dict[token] ** 2
+        query_norm += query_dict[token] * query_dict[token]
     query_norm = math.sqrt(query_norm)
 
     for doc in relevant_documents:
@@ -179,7 +182,7 @@ def query_tf_idf(query_dict, relevant_documents, dictionary, document_norms):
         for token in query_dict:
             if token in dictionary:
                 if doc in dictionary[token]:
-                    dot += dictionary[token][doc] * query_dict[token]
+                    dot += tf_idfs[doc][token] * query_dict[token]
 
         cosSim = dot / (document_norms[doc] * query_norm)
 
@@ -205,6 +208,7 @@ def query():
     document_norms = corpus["document_norms"]
     document_lens = corpus["document_lens"]
     bm25_idfs = corpus["bm25_idfs"]
+    tf_idfs = corpus["tf_idfs"]
 
     index_json.close()
 
@@ -216,16 +220,22 @@ def query():
         return
 
     relavent_docs = find_relevant_documents(query, dictionary)
+    f = open("ranked_query_docs.txt", "w")
     if method == "bm25":
         results = query_bm_25(query, relavent_docs, dictionary, document_lens, bm25_idfs)
+        for i in range(0, len(results)):
+            if results[i][1] >= 10:
+                f.write(results[i][0] + "\n")
     else:
         query_dict = calc_query_tf_idf(query, dictionary, len(document_lens))
 
-        results = query_tf_idf(query_dict, relavent_docs, dictionary, document_norms)
+        results = query_tf_idf(query_dict, relavent_docs, dictionary, tf_idfs, document_norms)
 
-    f = open("ranked_query_docs.txt", "w")
-    for i in range(0, len(results)):
-        f.write(results[i][0] + "\n")
+        for i in range(0, len(results)):
+            if results[i][1] >= 0.075:
+                f.write(results[i][0] + "\n")
+
+
     f.close()
 
 
